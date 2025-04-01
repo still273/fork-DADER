@@ -9,6 +9,8 @@ import csv
 import os
 import datetime
 from train.evaluate import evaluate
+import time
+
 def pretrain(args, encoder, classifier, data_loader, tgt_data_loader):
     """Train F and M for source domain without valid dataset."""
 
@@ -22,7 +24,7 @@ def pretrain(args, encoder, classifier, data_loader, tgt_data_loader):
     classifier.train()
     start = datetime.datetime.now()
     for epoch in range(args.pre_epochs):
-        for step, (reviews, mask,segment, labels) in enumerate(data_loader):
+        for step, (reviews, mask,segment, labels, _, _) in enumerate(data_loader):
             reviews = make_cuda(reviews)
             mask = make_cuda(mask)
             segment = make_cuda(segment)
@@ -64,7 +66,7 @@ def pretrain(args, encoder, classifier, data_loader, tgt_data_loader):
 
     return encoder, classifier
 
-def pretrain_best(args, encoder, classifier, data_loader, tgt_data_valid_loader,tgt_data_train_loader):
+def pretrain_best(args, encoder, classifier, data_loader, valid_loader, tgt_data_valid_loader, tgt_data_train_loader):
     """Train F and M for source domain with valid dataset."""
 
     # setup criterion and optimizer
@@ -79,8 +81,11 @@ def pretrain_best(args, encoder, classifier, data_loader, tgt_data_valid_loader,
     best_f1 = 0
     tgt_res = -1
     best_epoch = -1
+    best_epoch_res = []
+    results = []
     for epoch in range(args.pre_epochs):
-        for step, (reviews, mask,segment, labels,_) in enumerate(data_loader):
+        t_epoch = time.perf_counter()
+        for step, (reviews, mask,segment, labels,_,_,_) in enumerate(data_loader):
             reviews = make_cuda(reviews)
             mask = make_cuda(mask)
             segment = make_cuda(segment)
@@ -106,7 +111,7 @@ def pretrain_best(args, encoder, classifier, data_loader, tgt_data_valid_loader,
                          step + 1,
                          len(data_loader),
                          cls_loss.item()))
-        
+
         if args.rec_epoch:
             """record the F1 score for each epoch"""
             end = datetime.datetime.now()
@@ -117,29 +122,40 @@ def pretrain_best(args, encoder, classifier, data_loader, tgt_data_valid_loader,
             row = [epoch,res,now_time]
             csv_writer.writerow(row)
             f.close()
-        if 1:
-            f1 = evaluate(encoder, classifier, tgt_data_valid_loader)
-            if f1 > best_f1:
-                print("best epoch number: ",epoch)
-                print("valid F1: ",f1)
-                best_f1 = f1
-                if args.rec_epoch:
-                    tgt_res = res
-                else:
-                    print("tgt_res:")
-                    tgt_res = evaluate(encoder, classifier, tgt_data_train_loader)
-                if epoch < 5:
-                    """
-                    Save the best Baseline of the first five epochs for later adaptation;
-                    To prevent over-fitting of the model on the Source, we only pretrain 5 epochs.
-                    """
-                    best_epoch = epoch
-                    save_model(args, encoder, param.src_encoder_path+args.tgt+'best')
-                    save_model(args, classifier, param.src_classifier_path+args.tgt+'best')
-        
-    encoder = init_model(args, encoder, restore=param.src_encoder_path+args.tgt+'best')
-    classifier = init_model(args, classifier, restore=param.src_classifier_path+args.tgt+'best')
-    return encoder, classifier,tgt_res
+        t_train = time.perf_counter()
+        f1_src = evaluate(encoder, classifier, valid_loader)
+        f1_tgt = evaluate(encoder, classifier, tgt_data_valid_loader)
+        if args.validate_src:
+            f1 = f1_src
+        else:
+            f1 = f1_tgt
+        t_valid = time.perf_counter()
+
+        curr_results = [epoch, f1_src, f1_tgt, t_train-t_epoch, t_valid-t_train]
+        results += [curr_results]
+        if f1 > best_f1:
+            print("best epoch number: ",epoch)
+            print("valid F1: ",f1)
+            best_f1 = f1
+            if args.rec_epoch:
+                tgt_res = res
+            else:
+                print("tgt_res:")
+                tgt_res = evaluate(encoder, classifier, tgt_data_train_loader)
+            if epoch < 5:
+                """
+                Save the best Baseline of the first five epochs for later adaptation;
+                To prevent over-fitting of the model on the Source, we only pretrain 5 epochs.
+                """
+                best_epoch = epoch
+                save_model(args, encoder, 'best'+param.src_encoder_path)
+                save_model(args, classifier, 'best'+param.src_classifier_path)
+            best_epoch_res = curr_results
+    results += [best_epoch_res]
+    if not args.last_epoch:
+        encoder = init_model(args, encoder, restore='best'+param.src_encoder_path)
+        classifier = init_model(args, classifier, restore='best'+param.src_classifier_path)
+    return encoder, classifier,tgt_res, results
 
 def pretrain_best_semi(args, encoder, classifier, data_loader, tgt_data_valid_loader,tgt_data_test_loader):
     """Train F and M for source domain with valid dataset and record data for semi."""
