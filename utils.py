@@ -11,12 +11,14 @@ import param
 class InputFeatures(object):
     """A single set of features of data."""
 
-    def __init__(self, input_ids=None, input_mask=None, segment_ids=None,label_id=None,exm_id=None):
+    def __init__(self, input_ids=None, input_mask=None, segment_ids=None,label_id=None,exm_id=None,pair_l_id=None, pair_r_id=None):
         self.input_ids = input_ids
         self.input_mask = input_mask
         self.segment_ids = segment_ids
         self.label_id = label_id
         self.exm_id = exm_id
+        self.pair_l_id = pair_l_id
+        self.pair_r_id = pair_r_id
 class InputFeaturesED(object):
     """A single set of features of data for ED."""
     def __init__(self, input_ids, attention_mask,label_id):
@@ -52,7 +54,7 @@ def init_random_seed(manual_seed):
 def init_model(args, net, restore=None):
     """ restore model weights """
     if restore is not None:
-        path = os.path.join(param.model_root, args.src, args.model, str(args.train_seed), restore)
+        path = os.path.join(args.output, args.model, restore)
         if os.path.exists(path):
             net.load_state_dict(torch.load(path))
             print("Restore model from: {}".format(os.path.abspath(path)))
@@ -65,7 +67,7 @@ def init_model(args, net, restore=None):
 
 def save_model(args, net, name):
     """Save trained model."""
-    folder = os.path.join(param.model_root, args.src, args.model, str(args.train_seed))
+    folder = os.path.join(args.output, args.model)
     path = os.path.join(folder, name)
     if not os.path.exists(folder):
         os.makedirs(folder)
@@ -73,11 +75,11 @@ def save_model(args, net, name):
     print("save pretrained model to: {}".format(path))
 
 
-def convert_examples_to_features(pairs, labels, max_seq_length, tokenizer,
+def convert_examples_to_features(pairs, labels,pair_l_ids, pair_r_ids, max_seq_length, tokenizer,
                                  cls_token='[CLS]', sep_token='[SEP]',
                                  pad_token=0,csv_writer=None,exp_idx=-1):
     features = []
-    for ex_index, (pair, label) in enumerate(zip(pairs, labels)):
+    for ex_index, (pair, label,pair_l_id, pair_r_id) in enumerate(zip(pairs, labels,pair_l_ids, pair_r_ids)):
         if (ex_index + 1) % 200 == 0:
             print("writing example %d of %d" % (ex_index + 1, len(pairs)))
         # add ER situation
@@ -127,7 +129,9 @@ def convert_examples_to_features(pairs, labels, max_seq_length, tokenizer,
                           input_mask=input_mask,
                           segment_ids = segment_ids,
                           label_id=label,
-                          exm_id=ex_index))
+                          exm_id=ex_index,
+                          pair_l_id=pair_l_id,
+                          pair_r_id=pair_r_id))
         if csv_writer != None:
             """Record training data for semi"""
             csv_writer.writerow([ex_index, pair, label])
@@ -139,7 +143,9 @@ def get_data_loader(features, batch_size,flag):
     all_segment_ids = torch.tensor([f.segment_ids for f in features], dtype=torch.long)
     all_label_ids = torch.tensor([f.label_id for f in features], dtype=torch.long)
     all_exm_ids = torch.tensor([f.exm_id for f in features], dtype=torch.long)
-    dataset = TensorDataset(all_input_ids, all_input_mask,all_segment_ids, all_label_ids,all_exm_ids)
+    all_pair_l_ids = torch.tensor([f.pair_l_id for f in features], dtype=torch.long)
+    all_pair_r_ids = torch.tensor([f.pair_r_id for f in features], dtype=torch.long)
+    dataset = TensorDataset(all_input_ids, all_input_mask,all_segment_ids, all_label_ids,all_exm_ids, all_pair_l_ids, all_pair_r_ids)
     sampler = RandomSampler(dataset)
     if flag == "dev":
         """Read all data"""

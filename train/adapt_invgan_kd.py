@@ -9,6 +9,7 @@ import csv
 import os
 import math
 import datetime
+import time
 
 def adapt(args, src_encoder, tgt_encoder, discriminator,
           src_classifier, src_data_loader, tgt_data_train_loader, tgt_data_all_loader):
@@ -31,7 +32,7 @@ def adapt(args, src_encoder, tgt_encoder, discriminator,
     for epoch in range(args.num_epochs):
         # zip source and target data pair
         data_zip = enumerate(zip(src_data_loader, tgt_data_train_loader))
-        for step, ((reviews_src, src_mask,src_segment, _), (reviews_tgt, tgt_mask,tgt_segment, _)) in data_zip:
+        for step, ((reviews_src, src_mask,src_segment, _, _, _), (reviews_tgt, tgt_mask,tgt_segment, _, _, _)) in data_zip:
             reviews_src = make_cuda(reviews_src)
             src_mask = make_cuda(src_mask)
             src_segment = make_cuda(src_segment)
@@ -116,7 +117,7 @@ def adapt(args, src_encoder, tgt_encoder, discriminator,
     return tgt_encoder,discriminator
 
 def adapt_best(args, src_encoder, tgt_encoder, discriminator,
-          src_classifier, src_data_loader, tgt_data_train_loader, tgt_data_valid_loader):
+          src_classifier, src_data_loader, src_valid_loader, tgt_data_train_loader, tgt_data_valid_loader):
     """INvGAN+KD with valid data"""
 
     # set train state for Dropout and BN layers
@@ -137,10 +138,14 @@ def adapt_best(args, src_encoder, tgt_encoder, discriminator,
     best_f1 = 0
     res = -1.0
     tgt_res = -1.0
+
+    results = []
+    best_epoch = []
     for epoch in range(args.num_epochs):
+        t_epoch = time.perf_counter()
         # zip source and target data pair
         data_zip = enumerate(zip(src_data_loader, tgt_data_train_loader))
-        for step, ((reviews_src, src_mask,src_segment, _,_), (reviews_tgt, tgt_mask,tgt_segment, _,_)) in data_zip:
+        for step, ((reviews_src, src_mask,src_segment, _,_, _, _), (reviews_tgt, tgt_mask,tgt_segment, _,_, _, _)) in data_zip:
             reviews_src = make_cuda(reviews_src)
             src_mask = make_cuda(src_mask)
             src_segment = make_cuda(src_segment)
@@ -221,22 +226,34 @@ def adapt_best(args, src_encoder, tgt_encoder, discriminator,
             row = [epoch,res,now_time]
             csv_writer.writerow(row)
             f.close()
+        t_train = time.perf_counter()
+        src_res = evaluate(tgt_encoder, src_classifier, src_valid_loader)
+        tgt_res = evaluate(tgt_encoder, src_classifier, tgt_data_valid_loader)
+        t_valid = time.perf_counter()
 
-        f1 = evaluate(tgt_encoder, src_classifier, tgt_data_valid_loader)
+        curr_res = [epoch, src_res, tgt_res,  t_train-t_epoch, t_valid-t_train]
+        results += [curr_res]
+        if args.validate_src:
+            f1 = src_res
+        else:
+            f1 = tgt_res
         if f1 > best_f1:
             print("best epoch: ",epoch)
             print("F1: ",f1)
             best_f1 = f1
             if args.need_kd_model:
-                save_model(args, tgt_encoder, param.tgt_encoder_path+args.tgt+'best')
+                save_model(args, tgt_encoder, 'best' + param.tgt_encoder_path)
 
             print("======== tgt result =======")
             if args.rec_epoch:
                 tgt_res = res
             else:
                 tgt_res = evaluate(tgt_encoder, src_classifier, tgt_data_train_loader)
-
-    return tgt_encoder,discriminator,tgt_res,best_f1
+            best_epoch = curr_res
+    results += [best_epoch]
+    if not args.last_epoch:
+        tgt_encoder = init_model(args, tgt_encoder, restore='best'+param.tgt_encoder_path)
+    return tgt_encoder,discriminator,tgt_res,best_f1, results
 
 def adapt_best_semi(args, src_encoder, tgt_encoder, discriminator,
           src_classifier, src_data_loader, tgt_data_train_loader, tgt_data_valid_loader,tgt_data_test_loader=None):

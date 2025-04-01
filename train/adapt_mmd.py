@@ -7,14 +7,15 @@ import torch.nn.functional as F
 import torch.nn as nn
 import param
 import torch.optim as optim
-from utils import save_model
+from utils import save_model, init_model
 import csv
 import os
 from metrics import mmd
 import numpy as np
 import itertools
+import time
 
-def train(args, encoder, classifier, src_data_loader, tgt_data_train_loader, tgt_data_valid_loader):
+def train(args, encoder, classifier, src_data_loader,src_valid_loader, tgt_data_train_loader, tgt_data_valid_loader):
     """Train encoder for target domain."""
 
     # set train state for Dropout and BN layers
@@ -28,7 +29,10 @@ def train(args, encoder, classifier, src_data_loader, tgt_data_train_loader, tgt
     len_data_loader = min(len(src_data_loader), len(tgt_data_train_loader))
     bestf1 = 0.0
     besttrainf1 = 0.0
+    results = []
+    best_epoch = []
     for epoch in range(args.num_epochs):
+        t_epoch = time.perf_counter()
         if len(src_data_loader)>len(tgt_data_train_loader):
             data_zip = enumerate(zip(src_data_loader, tgt_data_train_loader))
         else:
@@ -37,8 +41,8 @@ def train(args, encoder, classifier, src_data_loader, tgt_data_train_loader, tgt
         jssum = 0
         for step, (src, tgt) in data_zip:
             if tgt:
-                reviews_src, src_mask,src_segment, labels,_ = src
-                reviews_tgt, tgt_mask,tgt_segment, _,_ = tgt
+                reviews_src, src_mask,src_segment, labels,_,_,_ = src
+                reviews_tgt, tgt_mask,tgt_segment, _,_,_,_ = tgt
                 reviews_src = make_cuda(reviews_src)
                 src_mask = make_cuda(src_mask)
                 src_segment = make_cuda(src_segment)
@@ -80,6 +84,7 @@ def train(args, encoder, classifier, src_data_loader, tgt_data_train_loader, tgt
             loss.backward()
             optimizer.step()
             mmd_sum += loss_mmd.item()
+
             if (step + 1) % args.log_step == 0:
                 print("Epoch [%.2d/%.2d] Step [%.3d/%.3d]: "
                       "mmd_loss=%.4f cls_loss=%.4f"
@@ -89,15 +94,27 @@ def train(args, encoder, classifier, src_data_loader, tgt_data_train_loader, tgt
                          len_data_loader,
                          loss_mmd.item(),
                          cls_loss.item()))
-        f1_train,eloss_train = evaluate(args, encoder, classifier, tgt_data_train_loader, src_data_loader,epoch=epoch, pattern=1000)
-        f1_valid,eloss_valid = evaluate(args, encoder, classifier, tgt_data_valid_loader, src_data_loader,epoch=epoch, pattern=1000)
+        t_train = time.perf_counter()
+        f1_tgt,eloss_train,_,_,_,_ = evaluate(args, encoder, classifier, tgt_data_valid_loader, src_data_loader,epoch=epoch, pattern=1000)
+        f1_src, eloss_train, _, _, _, _ = evaluate(args, encoder, classifier, src_valid_loader, src_data_loader,
+                                                     epoch=epoch, pattern=1000)
+        t_valid = time.perf_counter()
+        curr_result = [epoch, f1_src, f1_tgt, t_train-t_epoch, t_valid-t_train]
+        results += [curr_result]
+        if args.validate_src:
+            f1_valid = f1_src
+        else:
+            f1_valid = f1_tgt
         if f1_valid>bestf1:
-            save_model(args, encoder, param.src_encoder_path+'mmdbestmodel')
-            save_model(args, classifier, param.src_classifier_path+'mmdbestmodel')
+            save_model(args, encoder, 'mmdbestmodel' +param.src_encoder_path)
+            save_model(args, classifier, 'mmdbestmodel' +param.src_classifier_path)
             bestf1 = f1_valid
-            besttrainf1 = f1_train
-
-    return encoder,classifier,besttrainf1
+            best_epoch = curr_result
+    results+=[best_epoch]
+    if not args.last_epoch:
+        encoder = init_model(args, encoder, restore='mmdbestmodel' +param.src_encoder_path)
+        classifier = init_model(args, classifier, restore='mmdbestmodel' +param.src_classifier_path)
+    return encoder,classifier,results
 
 def evaluate(args, encoder, classifier, data_loader, src_data_loader, flag=None,epoch=None,pattern=None):
     # set eval state for Dropout and BN layers
@@ -116,7 +133,8 @@ def evaluate(args, encoder, classifier, data_loader, src_data_loader, flag=None,
 
     # evaluate network
     first = 0
-    for (reviews, mask,segment, labels,_) in data_loader:
+    l_ids, r_ids, labels_list, predictions = [], [], [], []
+    for (reviews, mask,segment, labels,_,l_id,r_id) in data_loader:
         
         truelen = torch.sum(mask, dim=1)
         reviews = make_cuda(reviews)
@@ -140,6 +158,10 @@ def evaluate(args, encoder, classifier, data_loader, src_data_loader, flag=None,
             else:
                 if pred_cls[i] == 1:
                     fp += 1
+        labels_list += list(labels.detach().cpu().numpy())
+        predictions+= list(preds.detach().cpu().numpy())
+        l_ids += list(l_id.numpy())
+        r_ids += list(r_id.numpy())
     div_safe = 0.000001
     print("p",p)
     print("tp",tp)
@@ -165,4 +187,4 @@ def evaluate(args, encoder, classifier, data_loader, src_data_loader, flag=None,
             csv_writer.writerows(row)
             f.close()
 
-    return f1,loss
+    return f1,loss, labels_list, predictions, l_ids, r_ids

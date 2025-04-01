@@ -11,7 +11,7 @@ import csv
 import os
 import datetime
 
-def evaluate(encoder, classifier, data_loader,args=None,flag=None,discriminator=None,exp_idx=None):
+def evaluate(encoder, classifier, data_loader,args=None,flag=None,discriminator=None,exp_idx=None, return_preds=False):
     """Evaluation for encoder and classifier on target dataset."""
     # set eval state for Dropout and BN layers
     encoder.eval()
@@ -27,7 +27,8 @@ def evaluate(encoder, classifier, data_loader,args=None,flag=None,discriminator=
     criterion = nn.CrossEntropyLoss()
     count = 0
     # evaluate network
-    for (reviews, mask,segment, labels,exm_id) in data_loader:
+    l_ids, r_ids, labels_list, predictions = [], [], [], []
+    for (reviews, mask,segment, labels,exm_id, l_id, r_id) in data_loader:
         reviews = make_cuda(reviews)
         mask = make_cuda(mask)
         segment = make_cuda(segment)
@@ -55,6 +56,11 @@ def evaluate(encoder, classifier, data_loader,args=None,flag=None,discriminator=
                 if pred_cls[i] == 1:
                     fp += 1
 
+        labels_list += list(labels.detach().cpu().numpy())
+        predictions += list(preds.detach().cpu().numpy())
+        l_ids += list(l_id.numpy())
+        r_ids += list(r_id.numpy())
+
     div_safe = 0.000001
     print("===== RES ====")
     print("p",p)
@@ -70,4 +76,6 @@ def evaluate(encoder, classifier, data_loader,args=None,flag=None,discriminator=
 
     loss /= len(data_loader)
     acc /= len(data_loader.dataset)
+    if return_preds:
+        return predictions, labels_list, l_ids, r_ids
     return f1
